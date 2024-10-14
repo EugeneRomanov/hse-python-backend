@@ -1,9 +1,7 @@
 from http import HTTPStatus
 from typing import List, Optional
-
 from fastapi import FastAPI, HTTPException, Response
-
-from lecture_2.hw.shop_api.models import Cart, Item, ItemDto, DEFAULT_ITEM_DTO_FIELDS, ItemCart
+from .models import Cart, Item, ItemDto, DEFAULT_ITEM_DTO_FIELDS, ItemCart
 
 app = FastAPI(title="Shop API")
 
@@ -91,11 +89,11 @@ def patch_item(id: int, updated_fields: dict):
 
 @app.delete("/item/{id}")
 def delete_item(id: int):
-    item = get_item_by_id(id)
-    if item:
-        item.deleted = True
-        return {"message": "Item deleted"}
-    raise HTTPException(detail="Item not found", status_code=HTTPStatus.NOT_FOUND)
+    for item in items:
+        if item.id == id:
+            item.deleted = True
+            return {"message": "Item deleted"}
+    raise HTTPException( detail="Item not found", status_code=HTTPStatus.NOT_FOUND)
 
 @app.get("/item", response_model=List[Item])
 def list_items(
