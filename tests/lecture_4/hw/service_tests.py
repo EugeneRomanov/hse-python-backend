@@ -7,12 +7,11 @@ from lecture_4.demo_service.core.users import UserRole
 from lecture_4.demo_service.api.utils import initialize
 from lecture_4.demo_service.api.main import create_app
 
-
 # Фикстуры для приложения и клиента
 @pytest_asyncio.fixture
 async def app() -> FastAPI:
     app = create_app()
-    async with initialize(app):
+    async with initialize(app):  # ensure the app is properly initialized
         yield app
 
 
@@ -42,7 +41,7 @@ async def test_register_user(client: AsyncClient):
     response = await client.post("/user-register", json=request_body)
     assert response.status_code == 200
     json_response = response.json()
-    
+
     assert json_response["username"] == "newuser"
     assert json_response["name"] == "New User"
     assert json_response["role"] == UserRole.USER.value
@@ -87,7 +86,7 @@ async def test_register_user_name_taken(client: AsyncClient):
     response = await client.post("/user-register", json=request_body)
     assert response.status_code == 200
 
-    # Попытка регистрации с тем же именем пользователя
+    # Повторная попытка регистрации с тем же именем пользователя
     response = await client.post("/user-register", json=request_body)
     assert response.status_code == 400
     assert response.json() == {"detail": "username is already taken"}
@@ -102,7 +101,7 @@ async def test_get_user_by_username(client: AsyncClient):
     response = await client.post("/user-get", params=params, headers=headers)
     assert response.status_code == 200
     json_response = response.json()
-    
+
     assert json_response["username"] == "admin"
     assert json_response["name"] == "admin"
 
