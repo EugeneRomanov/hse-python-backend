@@ -3,6 +3,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import AsyncClient
+
 from lecture_4.demo_service.core.users import UserRole
 from lecture_4.demo_service.api.utils import initialize
 from lecture_4.demo_service.api.main import create_app
