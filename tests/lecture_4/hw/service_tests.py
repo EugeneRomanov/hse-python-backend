@@ -1,279 +1,207 @@
 import base64
-from http import HTTPStatus
 import pytest
-from faker import Faker
-from fastapi.testclient import TestClient
-from lecture_4.demo_service.api.contracts import UserResponse
+import pytest_asyncio
+from fastapi import FastAPI
+from httpx import AsyncClient
+from lecture_4.demo_service.core.users import UserRole
+from lecture_4.demo_service.api.utils import initialize
 from lecture_4.demo_service.api.main import create_app
 
-faker = Faker()
-app = create_app()
+@pytest_asyncio.fixture
+async def app() -> FastAPI:
+    """Создает экземпляр FastAPI приложения для тестов."""
+    app = create_app()
+    async with initialize(app):
+        yield app
 
-@pytest.fixture
-def client():
-    """
-    Fixture that creates and returns a TestClient for FastAPI app.
-    Used to send test requests to the API.
-    """
-    with TestClient(app) as client:
+@pytest_asyncio.fixture
+async def client(app: FastAPI):
+    """Создает асинхронного клиента для взаимодействия с FastAPI приложением."""
+    async with AsyncClient(app=app, base_url="http://test") as client:
         yield client
 
+def basic_auth(username: str, password: str) -> dict:
+    """Возвращает заголовок для Basic Authentication."""
+    credentials = f"{username}:{password}".encode("utf-8")
+    auth_header = base64.b64encode(credentials).decode("utf-8")
+    return {"Authorization": f"Basic {auth_header}"}
 
-@pytest.fixture()
-def user(password, client):
-    """
-    Fixture that registers a test user and returns the user details.
-    
-    Args:
-        password: The password used for registration.
-        client: The test client used to send API requests.
-    
-    Returns:
-        UserResponse: A response object with user details (uid, username, name, birthdate, role).
-    """
-    username = 'test_user_1'
-    name = 'test_name_1'
-    birthdate = str(faker.date_time().isoformat())
+@pytest.mark.asyncio
+async def test_register_user(client: AsyncClient):
+    """Тестирует успешную регистрацию нового пользователя."""
+    request_body = {
+        "username": "newuser",
+        "name": "New User",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "password123",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 200
+    json_response = response.json()
+    assert json_response["username"] == "newuser"
+    assert json_response["name"] == "New User"
+    assert json_response["role"] == UserRole.USER.value
 
-    resp = client.post('/user-register', json={
-        'username': username,
-        'name': name,
-        'birthdate': birthdate,
-        'password': password,
-    })
-    json = resp.json()
-    return UserResponse(uid=json['uid'], username=username, name=name, birthdate=birthdate, role=json['role'])
+@pytest.mark.asyncio
+async def test_register_user_invalid_password(client: AsyncClient):
+    """Тестирует регистрацию с некорректным паролем (слишком слабый пароль)."""
+    request_body = {
+        "username": "weakuser",
+        "name": "Weak User",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "weakpass",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 400
 
+@pytest.mark.asyncio
+async def test_register_user_password_without_digit(client: AsyncClient):
+    """Тестирует регистрацию с паролем, не содержащим цифры."""
+    request_body = {
+        "username": "user_without_digit",
+        "name": "User Without Digit",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "longpasswordwithoutdigit",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid password"}
 
-@pytest.fixture()
-def password():
-    """
-    Fixture that returns a default test password.
-    
-    Returns:
-        str: A predefined test password.
-    """
-    return "secret_password_12345"
+@pytest.mark.asyncio
+async def test_register_user_name_taken(client: AsyncClient):
+    """Тестирует попытку регистрации с уже существующим именем пользователя."""
+    request_body = {
+        "username": "newuser",
+        "name": "New User",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "password123",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 200
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "username is already taken"}
 
+@pytest.mark.asyncio
+async def test_get_user_by_username(client: AsyncClient):
+    """Тестирует получение пользователя по имени пользователя с использованием Basic Auth."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    params = {"username": "admin"}
+    response = await client.post("/user-get", params=params, headers=headers)
+    assert response.status_code == 200
+    json_response = response.json()
+    assert json_response["username"] == "admin"
+    assert json_response["name"] == "admin"
 
-@pytest.fixture()
-def admin_creds():
-    """
-    Fixture that returns encoded admin credentials for authorization.
-    
-    Returns:
-        str: Base64-encoded admin credentials.
-    """
-    return base64.b64encode(f"admin:superSecretAdminPassword123".encode("ascii")).decode("utf-8")
+@pytest.mark.asyncio
+async def test_get_user_by_id(client: AsyncClient):
+    """Тестирует получение пользователя по ID."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    params = {"id": 1}
+    response = await client.post("/user-get", params=params, headers=headers)
+    assert response.status_code == 200
+    json_response = response.json()
+    assert json_response["uid"] == 1
+    assert json_response["username"] == "admin"
 
+@pytest.mark.asyncio
+async def test_get_user_without_id_or_username(client: AsyncClient):
+    """Тестирует запрос без указания ID или имени пользователя."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    response = await client.post("/user-get", headers=headers)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "neither id nor username are provided"}
 
-def test_register_user(password, user, client):
-    """
-    Test the user registration API endpoint. Ensures that user is correctly registered.
-    
-    Args:
-        password: The password used for registration.
-        user: The registered test user.
-        client: The test client used to send API requests.
-    """
-    username = 'test_user'
-    name = 'test_name'
-    birthdate = str(faker.date_time().isoformat())
+@pytest.mark.asyncio
+async def test_get_user_not_found(client: AsyncClient):
+    """Тестирует запрос пользователя, которого не существует."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    response = await client.post("/user-get", params={"id": 999}, headers=headers)
+    assert response.status_code == 404
 
-    resp = client.post('/user-register', json={
-        'username': username,
-        'name': name,
-        'birthdate': birthdate,
-        'password': password,
-    })
-    json = resp.json()
+@pytest.mark.asyncio
+async def test_promote_user(client: AsyncClient):
+    """Тестирует успешное повышение пользователя до административной роли."""
+    request_body = {
+        "username": "newuser",
+        "name": "New User",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "password123",
+    }
+    response_json = (await client.post("/user-register", json=request_body)).json()
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    params = {"id": response_json["uid"]}
+    response = await client.post("/user-promote", params=params, headers=headers)
+    assert response.status_code == 200
+    assert response.text == ""
 
-    assert resp.status_code == HTTPStatus.OK
-    assert json['username'] == username
-    assert json['birthdate'] == birthdate
-    assert json['name'] == name
+@pytest.mark.asyncio
+async def test_unauthorized_access(client: AsyncClient):
+    """Тестирует доступ с некорректным токеном авторизации."""
+    headers = {"Authorization": "Basic invalid_token"}
+    response = await client.post("/user-get", headers=headers)
+    assert response.status_code == 401
 
+@pytest.mark.asyncio
+async def test_value_error_handler(client: AsyncClient):
+    """Тестирует ошибку при передаче одновременно ID и имени пользователя."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    params = {"id": 1, "username": "admin"}
+    response = await client.post("/user-get", params=params, headers=headers)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "both id and username are provided"}
 
-def test_register_user_with_username_already_taken(client, password, user):
-    """
-    Test that attempting to register a user with an already taken username results in a BAD_REQUEST error.
-    
-    Args:
-        client: The test client used to send API requests.
-        password: The password used for registration.
-        user: The registered test user.
-    """
-    resp = client.post('/user-register', json={
-        'username': user.username,
-        'name': user.name,
-        'birthdate': str(user.birthdate),
-        'password': password,
-    })
+@pytest.mark.asyncio
+async def test_requires_author_unauthorized(client: AsyncClient):
+    """Тестирует запрос с неверным пользователем и паролем."""
+    headers = basic_auth("invalid_user", "wrong_password")
+    response = await client.post("/user-get", headers=headers)
+    assert response.status_code == 401
 
-    assert resp.status_code == HTTPStatus.BAD_REQUEST
+@pytest.mark.asyncio
+async def test_value_error_handler_for_promote(client: AsyncClient):
+    """Тестирует обработку ошибки при попытке повышения несуществующего пользователя."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    response = await client.post("/user-promote", params={"id": 999}, headers=headers)
+    assert response.status_code == 400
 
+@pytest.mark.asyncio
+async def test_password_validation_failure(client: AsyncClient):
+    """Тестирует ошибку валидации пароля при слишком коротком пароле."""
+    request_body = {
+        "username": "shortpassworduser",
+        "name": "Short Password",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "short",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 400
 
-def test_register_with_invalid_password(client):
-    """
-    Test that attempting to register a user with an invalid password results in a BAD_REQUEST error.
-    
-    Args:
-        client: The test client used to send API requests.
-    """
-    resp = client.post('/user-register', json={
-        'username': 'user1',
-        'name': 'user1',
-        'birthdate': str(faker.date_time().isoformat()),
-        'password': '1',
-    })
+@pytest.mark.asyncio
+async def test_requires_author_missing_user(client: AsyncClient):
+    """Тестирует попытку доступа с использованием несуществующего пользователя."""
+    headers = basic_auth("nonexistent_user", "password")
+    response = await client.post("/user-get", headers=headers)
+    assert response.status_code == 401
 
-    assert resp.status_code == HTTPStatus.BAD_REQUEST
+@pytest.mark.asyncio
+async def test_requires_admin_forbidden(client: AsyncClient):
+    """Тестирует ошибку доступа при попытке повышения обычного пользователя до администратора."""
+    request_body = {
+        "username": "regular_user",
+        "name": "Regular User",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "password12345",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 200
+    headers = basic_auth("regular_user", "password12345")
+    response = await client.post("/user-promote", params={"id": 1}, headers=headers)
+    assert response.status_code == 403
 
-
-def test_get_unknown_user(password, admin_creds, client):
-    """
-    Test that attempting to retrieve a non-existing user results in a NOT_FOUND error.
-    
-    Args:
-        password: The password used for registration.
-        admin_creds: Base64-encoded admin credentials.
-        client: The test client used to send API requests.
-    """
-    response = client.post(
-        "/user-get",
-        params={'username': 'unknown'},
-        headers={"Authorization": "Basic " + admin_creds},
-    )
-
-    assert response.status_code == HTTPStatus.NOT_FOUND
-
-
-def test_get_user_username_and_id_provided(user, admin_creds, client):
-    """
-    Test that providing both username and ID when retrieving a user results in a BAD_REQUEST error.
-    
-    Args:
-        user: The registered test user.
-        admin_creds: Base64-encoded admin credentials.
-        client: The test client used to send API requests.
-    """
-    response = client.post(
-        "/user-get",
-        params={'username': user.username, 'id': user.uid},
-        headers={"Authorization": "Basic " + admin_creds},
-    )
-
-    assert response.status_code == HTTPStatus.BAD_REQUEST
-
-
-def test_get_user_neither_username_nor_id_provided(user, admin_creds, client):
-    """
-    Test that providing neither username nor ID when retrieving a user results in a BAD_REQUEST error.
-    
-    Args:
-        user: The registered test user.
-        admin_creds: Base64-encoded admin credentials.
-        client: The test client used to send API requests.
-    """
-    response = client.post(
-        "/user-get",
-        headers={"Authorization": "Basic " + admin_creds},
-    )
-
-    assert response.status_code == HTTPStatus.BAD_REQUEST
-
-
-def test_get_user_by_id(user, admin_creds, client):
-    """
-    Test that retrieving a user by ID returns the correct user details.
-    
-    Args:
-        user: The registered test user.
-        admin_creds: Base64-encoded admin credentials.
-        client: The test client used to send API requests.
-    """
-    response = client.post(
-        "/user-get",
-        params={'id': user.uid},
-        headers={"Authorization": "Basic " + admin_creds},
-    )
-
-    json = response.json()
-    assert response.status_code == HTTPStatus.OK
-    assert json['username'] == user.username
-    assert json['uid'] == user.uid
-    assert json['role'] == user.role
-
-
-def test_user_get_with_invalid_password(user, client):
-    """
-    Test that using invalid credentials to retrieve a user results in an UNAUTHORIZED error.
-    
-    Args:
-        user: The registered test user.
-        client: The test client used to send API requests.
-    """
-    creds = base64.b64encode(f"admin:wrong-password".encode("ascii")).decode("utf-8")
-    response = client.post(
-        "/user-get",
-        params={'id': user.uid},
-        headers={"Authorization": "Basic " + creds},
-    )
-
-    assert response.status_code == HTTPStatus.UNAUTHORIZED
-
-
-def test_user_promote(user, admin_creds, client):
-    """
-    Test that promoting a user with valid admin credentials succeeds.
-    
-    Args:
-        user: The registered test user.
-        admin_creds: Base64-encoded admin credentials.
-        client: The test client used to send API requests.
-    """
-    response = client.post(
-        '/user-promote',
-        params={'id': user.uid},
-        headers={"Authorization": "Basic " + admin_creds}
-    )
-
-    assert response.status_code == HTTPStatus.OK
-
-
-def test_user_promote_not_being_admin(user, password, client):
-    """
-    Test that attempting to promote a user without admin rights results in a FORBIDDEN error.
-    
-    Args:
-        user: The registered test user.
-        password: The password used for registration.
-        client: The test client used to send API requests.
-    """
-    creds = base64.b64encode(f"{user.username}:{password}".encode("ascii")).decode("utf-8")
-    response = client.post(
-        '/user-promote',
-        params={'id': user.uid},
-        headers={"Authorization": "Basic " + creds}
-    )
-
-    assert response.status_code == HTTPStatus.FORBIDDEN
-
-
-def test_user_promote_unknown_user(user, password, admin_creds, client):
-    """
-    Test that attempting to promote a non-existing user results in a BAD_REQUEST error.
-    
-    Args:
-        user: The registered test user.
-        password: The password used for registration.
-        admin_creds: Base64-encoded admin credentials.
-        client: The test client used to send API requests.
-    """
-    response = client.post(
-        '/user-promote',
-        params={'id': 12345},
-        headers={"Authorization": "Basic " + admin_creds}
-    )
-
-    assert response.status_code == HTTPStatus.BAD_REQUEST
+@pytest.mark.asyncio
+async def test_grant_admin_user_not_found(client: AsyncClient):
+    """Тестирует попытку повышения до администратора для несуществующего пользователя."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    response = await client.post("/user-promote", params={"id": 999}, headers=headers)
+    assert response
