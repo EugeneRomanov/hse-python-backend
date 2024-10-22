@@ -1,164 +1,207 @@
 import base64
-from typing import AsyncGenerator, Dict
-
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import AsyncClient
-
 from lecture_4.demo_service.core.users import UserRole
 from lecture_4.demo_service.api.utils import initialize
 from lecture_4.demo_service.api.main import create_app
 
-# Constants
-TEST_BASE_URL = "http://test"
-ADMIN_CREDENTIALS = ("admin", "superSecretAdminPassword123")
-VALID_USER_DATA = {
-    "username": "newuser",
-    "name": "New User",
-    "birthdate": "1990-01-01T00:00:00Z",
-    "password": "password123",
-}
-
-# Fixtures
 @pytest_asyncio.fixture
-async def app() -> AsyncGenerator[FastAPI, None]:
+async def app() -> FastAPI:
+    """Создает экземпляр FastAPI приложения для тестов."""
     app = create_app()
     async with initialize(app):
         yield app
 
 @pytest_asyncio.fixture
-async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
-    async with AsyncClient(app=app, base_url=TEST_BASE_URL) as client:
+async def client(app: FastAPI):
+    """Создает асинхронного клиента для взаимодействия с FastAPI приложением."""
+    async with AsyncClient(app=app, base_url="http://test") as client:
         yield client
 
-# Helper functions
-def create_basic_auth_header(username: str, password: str) -> Dict[str, str]:
-    """Create Basic Auth header with given credentials."""
+def basic_auth(username: str, password: str) -> dict:
+    """Возвращает заголовок для Basic Authentication."""
     credentials = f"{username}:{password}".encode("utf-8")
     auth_header = base64.b64encode(credentials).decode("utf-8")
     return {"Authorization": f"Basic {auth_header}"}
 
-async def register_test_user(client: AsyncClient, user_data: dict) -> dict:
-    """Helper function to register a test user."""
-    response = await client.post("/user-register", json=user_data)
-    return response.json() if response.status_code == 200 else None
-
-# Tests
 @pytest.mark.asyncio
-class TestUserRegistration:
-    async def test_successful_registration(self, client: AsyncClient):
-        response = await client.post("/user-register", json=VALID_USER_DATA)
-        assert response.status_code == 200
-        
-        user_data = response.json()
-        assert user_data["username"] == VALID_USER_DATA["username"]
-        assert user_data["name"] == VALID_USER_DATA["name"]
-        assert user_data["role"] == UserRole.USER.value
-
-    async def test_invalid_password_formats(self, client: AsyncClient):
-        test_cases = [
-            {"password": "weakpass", "desc": "too_short"},
-            {"password": "longpasswordwithoutdigit", "desc": "no_digit"},
-        ]
-        
-        for case in test_cases:
-            invalid_data = VALID_USER_DATA.copy()
-            invalid_data["password"] = case["password"]
-            response = await client.post("/user-register", json=invalid_data)
-            assert response.status_code == 400
-
-    async def test_duplicate_username(self, client: AsyncClient):
-        # First registration should succeed
-        await register_test_user(client, VALID_USER_DATA)
-        
-        # Second registration with same username should fail
-        response = await client.post("/user-register", json=VALID_USER_DATA)
-        assert response.status_code == 400
-        assert response.json() == {"detail": "username is already taken"}
+async def test_register_user(client: AsyncClient):
+    """Тестирует успешную регистрацию нового пользователя."""
+    request_body = {
+        "username": "newuser",
+        "name": "New User",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "password123",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 200
+    json_response = response.json()
+    assert json_response["username"] == "newuser"
+    assert json_response["name"] == "New User"
+    assert json_response["role"] == UserRole.USER.value
 
 @pytest.mark.asyncio
-class TestUserRetrieval:
-    async def test_get_user_by_username(self, client: AsyncClient):
-        headers = create_basic_auth_header(*ADMIN_CREDENTIALS)
-        response = await client.post(
-            "/user-get",
-            params={"username": "admin"},
-            headers=headers
-        )
-        assert response.status_code == 200
-        user_data = response.json()
-        assert user_data["username"] == "admin"
-        assert user_data["name"] == "admin"
-
-    async def test_get_user_by_id(self, client: AsyncClient):
-        headers = create_basic_auth_header(*ADMIN_CREDENTIALS)
-        response = await client.post(
-            "/user-get",
-            params={"id": 1},
-            headers=headers
-        )
-        assert response.status_code == 200
-        user_data = response.json()
-        assert user_data["uid"] == 1
-        assert user_data["username"] == "admin"
-
-    async def test_invalid_user_queries(self, client: AsyncClient):
-        headers = create_basic_auth_header(*ADMIN_CREDENTIALS)
-        
-        # Test missing parameters
-        response = await client.post("/user-get", headers=headers)
-        assert response.status_code == 400
-        assert response.json() == {"detail": "neither id nor username are provided"}
-
-        # Test non-existent user
-        response = await client.post("/user-get", params={"id": 999}, headers=headers)
-        assert response.status_code == 404
+async def test_register_user_invalid_password(client: AsyncClient):
+    """Тестирует регистрацию с некорректным паролем (слишком слабый пароль)."""
+    request_body = {
+        "username": "weakuser",
+        "name": "Weak User",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "weakpass",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 400
 
 @pytest.mark.asyncio
-class TestUserPromotion:
-    async def test_successful_promotion(self, client: AsyncClient):
-        # Register a new user first
-        user_data = await register_test_user(client, VALID_USER_DATA)
-        
-        # Promote the user
-        headers = create_basic_auth_header(*ADMIN_CREDENTIALS)
-        response = await client.post(
-            "/user-promote",
-            params={"id": user_data["uid"]},
-            headers=headers
-        )
-        assert response.status_code == 200
-        assert response.text == ""
-
-    async def test_promotion_restrictions(self, client: AsyncClient):
-        # Register a regular user
-        regular_user_data = {
-            "username": "regular_user",
-            "name": "Regular User",
-            "birthdate": "1990-01-01T00:00:00Z",
-            "password": "password12345",
-        }
-        await register_test_user(client, regular_user_data)
-        
-        # Try to promote with regular user credentials
-        headers = create_basic_auth_header("regular_user", "password12345")
-        response = await client.post(
-            "/user-promote",
-            params={"id": 1},
-            headers=headers
-        )
-        assert response.status_code == 403
+async def test_register_user_password_without_digit(client: AsyncClient):
+    """Тестирует регистрацию с паролем, не содержащим цифры."""
+    request_body = {
+        "username": "user_without_digit",
+        "name": "User Without Digit",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "longpasswordwithoutdigit",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid password"}
 
 @pytest.mark.asyncio
-class TestAuthentication:
-    async def test_invalid_authentication(self, client: AsyncClient):
-        test_cases = [
-            {"headers": {"Authorization": "Basic invalid_token"}, "expected_status": 401},
-            {"headers": create_basic_auth_header("invalid_user", "wrong_password"), "expected_status": 401},
-            {"headers": create_basic_auth_header("nonexistent_user", "password"), "expected_status": 401},
-        ]
-        
-        for case in test_cases:
-            response = await client.post("/user-get", headers=case["headers"])
-            assert response.status_code == case["expected_status"]
+async def test_register_user_name_taken(client: AsyncClient):
+    """Тестирует попытку регистрации с уже существующим именем пользователя."""
+    request_body = {
+        "username": "newuser",
+        "name": "New User",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "password123",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 200
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "username is already taken"}
+
+@pytest.mark.asyncio
+async def test_get_user_by_username(client: AsyncClient):
+    """Тестирует получение пользователя по имени пользователя с использованием Basic Auth."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    params = {"username": "admin"}
+    response = await client.post("/user-get", params=params, headers=headers)
+    assert response.status_code == 200
+    json_response = response.json()
+    assert json_response["username"] == "admin"
+    assert json_response["name"] == "admin"
+
+@pytest.mark.asyncio
+async def test_get_user_by_id(client: AsyncClient):
+    """Тестирует получение пользователя по ID."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    params = {"id": 1}
+    response = await client.post("/user-get", params=params, headers=headers)
+    assert response.status_code == 200
+    json_response = response.json()
+    assert json_response["uid"] == 1
+    assert json_response["username"] == "admin"
+
+@pytest.mark.asyncio
+async def test_get_user_without_id_or_username(client: AsyncClient):
+    """Тестирует запрос без указания ID или имени пользователя."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    response = await client.post("/user-get", headers=headers)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "neither id nor username are provided"}
+
+@pytest.mark.asyncio
+async def test_get_user_not_found(client: AsyncClient):
+    """Тестирует запрос пользователя, которого не существует."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    response = await client.post("/user-get", params={"id": 999}, headers=headers)
+    assert response.status_code == 404
+
+@pytest.mark.asyncio
+async def test_promote_user(client: AsyncClient):
+    """Тестирует успешное повышение пользователя до административной роли."""
+    request_body = {
+        "username": "newuser",
+        "name": "New User",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "password123",
+    }
+    response_json = (await client.post("/user-register", json=request_body)).json()
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    params = {"id": response_json["uid"]}
+    response = await client.post("/user-promote", params=params, headers=headers)
+    assert response.status_code == 200
+    assert response.text == ""
+
+@pytest.mark.asyncio
+async def test_unauthorized_access(client: AsyncClient):
+    """Тестирует доступ с некорректным токеном авторизации."""
+    headers = {"Authorization": "Basic invalid_token"}
+    response = await client.post("/user-get", headers=headers)
+    assert response.status_code == 401
+
+@pytest.mark.asyncio
+async def test_value_error_handler(client: AsyncClient):
+    """Тестирует ошибку при передаче одновременно ID и имени пользователя."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    params = {"id": 1, "username": "admin"}
+    response = await client.post("/user-get", params=params, headers=headers)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "both id and username are provided"}
+
+@pytest.mark.asyncio
+async def test_requires_author_unauthorized(client: AsyncClient):
+    """Тестирует запрос с неверным пользователем и паролем."""
+    headers = basic_auth("invalid_user", "wrong_password")
+    response = await client.post("/user-get", headers=headers)
+    assert response.status_code == 401
+
+@pytest.mark.asyncio
+async def test_value_error_handler_for_promote(client: AsyncClient):
+    """Тестирует обработку ошибки при попытке повышения несуществующего пользователя."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    response = await client.post("/user-promote", params={"id": 999}, headers=headers)
+    assert response.status_code == 400
+
+@pytest.mark.asyncio
+async def test_password_validation_failure(client: AsyncClient):
+    """Тестирует ошибку валидации пароля при слишком коротком пароле."""
+    request_body = {
+        "username": "shortpassworduser",
+        "name": "Short Password",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "short",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 400
+
+@pytest.mark.asyncio
+async def test_requires_author_missing_user(client: AsyncClient):
+    """Тестирует попытку доступа с использованием несуществующего пользователя."""
+    headers = basic_auth("nonexistent_user", "password")
+    response = await client.post("/user-get", headers=headers)
+    assert response.status_code == 401
+
+@pytest.mark.asyncio
+async def test_requires_admin_forbidden(client: AsyncClient):
+    """Тестирует ошибку доступа при попытке повышения обычного пользователя до администратора."""
+    request_body = {
+        "username": "regular_user",
+        "name": "Regular User",
+        "birthdate": "1990-01-01T00:00:00Z",
+        "password": "password12345",
+    }
+    response = await client.post("/user-register", json=request_body)
+    assert response.status_code == 200
+    headers = basic_auth("regular_user", "password12345")
+    response = await client.post("/user-promote", params={"id": 1}, headers=headers)
+    assert response.status_code == 403
+
+@pytest.mark.asyncio
+async def test_grant_admin_user_not_found(client: AsyncClient):
+    """Тестирует попытку повышения до администратора для несуществующего пользователя."""
+    headers = basic_auth("admin", "superSecretAdminPassword123")
+    response = await client.post("/user-promote", params={"id": 999}, headers=headers)
+    assert response
